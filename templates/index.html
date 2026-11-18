@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Travel Agent | Smart Travel Planner</title>
+
+    <link rel="stylesheet" href="/static/style.css">
+
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <script defer src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.6/purify.min.js"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.3/html2pdf.bundle.min.js"></script>
+    <script defer src="/static/script.js"></script>
+</head>
+
+<body>
+
+<div class="app">
+
+    <aside class="sidebar">
+
+        <div class="logo">
+            <span class="logo-icon">✈</span>
+            <span>Travel Agent</span>
+        </div>
+
+        <p class="menu-title">MENU</p>
+
+        <nav>
+            <a href="#" class="nav-item active">⌂ <span>Explore</span></a>
+            <a href="#" class="nav-item">▣ <span>My Trips</span></a>
+            <a href="#" class="nav-item">♡ <span>Saved Places</span></a>
+            <a href="#" class="nav-item">◷ <span>Travel History</span></a>
+        </nav>
+
+        <div class="sidebar-bottom">
+
+            <div class="help-card">
+                <div class="help-icon">✦</div>
+                <h3>Need help?</h3>
+                <p>Our AI travel assistant is ready to help you.</p>
+                <button>Get Support</button>
+            </div>
+
+            <div class="profile">
+                <div class="avatar">RS</div>
+                <div>
+                    <h4>Rahul Sahu</h4>
+                    <p>Free Plan</p>
+                </div>
+                <span class="dots">•••</span>
+            </div>
+
+        </div>
+
+    </aside>
+
+
+    <main class="main">
+
+        <header class="topbar">
+            <p>Workspace / <strong>Explore</strong></p>
+
+            <div class="top-right">
+                <span class="online"><i></i> AI Assistant Online</span>
+                <button class="notification">♧</button>
+                <div class="avatar">RS</div>
+            </div>
+        </header>
+
+
+        <section class="hero">
+
+            <div class="hero-content">
+
+                <span class="hero-tag">✦ YOUR PERSONAL AI TRAVEL PLANNER</span>
+
+                <h1>
+                    Discover the world.<br>
+                    <span>We'll plan the rest.</span>
+                </h1>
+
+                <p>
+                    Tell us where you want to go. Our AI agents will handle
+                    flights, hotels, budgets and your complete itinerary.
+                </p>
+
+                <div class="hero-stats">
+                    <div>
+                        <strong>✦ AI Powered</strong>
+                        <small>Smart planning</small>
+                    </div>
+
+                    <div>
+                        <strong>♟ 4 Agents</strong>
+                        <small>Working together</small>
+                    </div>
+
+                    <div>
+                        <strong>✓ One Plan</strong>
+                        <small>Everything organized</small>
+                    </div>
+                </div>
+
+            </div>
+
+            <div class="hero-image">
+                <div class="image-overlay"></div>
+                <div class="travel-label">✦ Your next adventure starts here</div>
+            </div>
+
+        </section>
+
+
+        <section class="planner">
+
+            <div class="section-header">
+                <div>
+                    <span class="eyebrow">LET'S PLAN</span>
+                    <h2>Where do you want to go?</h2>
+                    <p>Customize your trip and let AI do the planning.</p>
+                </div>
+
+                <div class="ai-badge">
+                    <i></i> Powered by Multi-Agent AI
+                </div>
+            </div>
+
+
+            <form id="travelForm">
+
+                <div class="form-grid">
+
+                    <div class="form-group">
+                        <label>FROM</label>
+                        <div class="input-box">
+                            <span>⌖</span>
+                            <input
+                                type="text"
+                                id="origin"
+                                placeholder="Departure city"
+                                required
+                            >
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>DESTINATION</label>
+                        <div class="input-box">
+                            <span>◎</span>
+                            <input
+                                type="text"
+                                id="destination"
+                                placeholder="Where to?"
+                                required
+                            >
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>DURATION</label>
+                        <div class="input-box">
+                            <span>▣</span>
+                            <input
+                                type="number"
+                                id="duration"
+                                placeholder="Number of days"
+                                min="1"
+                                required
+                            >
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>TOTAL BUDGET</label>
+                        <div class="input-box">
+                            <span>₹</span>
+                            <input
+                                type="number"
+                                id="budget"
+                                placeholder="Your budget"
+                                min="1"
+                                required
+                            >
+                        </div>
+                    </div>
+
+                </div>
+
+
+                <div class="form-group description">
+                    <label>TELL US MORE ABOUT YOUR TRIP</label>
+
+                    <textarea
+                        id="extra"
+                        placeholder="Example: Plan a complete 7 days India trip from US under ₹1,00,000. Include flights, budget hotels, sightseeing and food recommendations."
+                    ></textarea>
+                </div>
+
+
+                <div class="form-footer">
+                    <p>✦ Your AI agents will work together to create your trip.</p>
+
+                    <button type="submit" id="submitBtn">
+                        Plan My Trip <span>→</span>
+                    </button>
+                </div>
+
+            </form>
+
+        </section>
+
+
+        <section id="travelResults" class="results-section">
+
+            <div id="loadingSection" class="loading-card" hidden>
+
+                <div class="loader"></div>
+
+                <h2>Planning Your Trip...</h2>
+
+                <p>Your AI agents are working together.</p>
+
+                <div class="loading-agents">
+                    <div>✈ Flight Agent</div>
+                    <div>⌂ Hotel Agent</div>
+                    <div>▤ Itinerary Agent</div>
+                    <div>✦ Final Response Agent</div>
+                </div>
+
+            </div>
+
+
+            <div id="errorSection" class="error-card" hidden>
+
+                <h2>Something went wrong!</h2>
+
+                <p id="errorMessage"></p>
+
+                <button type="button" id="retryBtn">
+                    Try Again
+                </button>
+
+            </div>
+
+
+            <div id="resultsContent" hidden>
+
+                <div class="results-header">
+
+                    <div>
+                        <span class="eyebrow">YOUR TRAVEL PLAN</span>
+
+                        <h2>Your Journey Is Ready!</h2>
+
+                        <p>Generated by your Multi-Agent AI Assistant.</p>
+                    </div>
+
+                    <div class="result-actions">
+
+                        <button type="button" class="copy-btn" id="copyBtn">
+                            Copy Plan
+                        </button>
+
+                        <button type="button" class="download-btn" id="downloadBtn">
+                            Download PDF ↓
+                        </button>
+
+                    </div>
+
+                </div>
+
+
+                <div id="pdfContent">
+
+                    <div class="pdf-heading">
+
+                        <h1>Travel Agent</h1>
+
+                        <p>Your Personal AI Travel Planner</p>
+
+                    </div>
+
+
+                    <div class="result-card">
+
+                        <h3>✦ Final Travel Recommendation</h3>
+
+                        <div class="result-content" id="finalAnswer"></div>
+
+                    </div>
+
+
+                    <div class="result-grid">
+
+                        <div class="result-card">
+
+                            <h3>✈ Flight Information</h3>
+
+                            <div class="result-content" id="flightResults"></div>
+
+                        </div>
+
+
+                        <div class="result-card">
+
+                            <h3>⌂ Hotel Suggestions</h3>
+
+                            <div class="result-content" id="hotelResults"></div>
+
+                        </div>
+
+
+                        <div class="result-card">
+
+                            <h3>▤ Day-by-Day Itinerary</h3>
+
+                            <div class="result-content" id="itineraryResults"></div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <p class="thread-info">
+                    Conversation ID:
+                    <span id="threadId"></span>
+                </p>
+
+
+                <button type="button" class="new-trip-btn" id="newTripBtn">
+                    + Plan Another Trip
+                </button>
+
+            </div>
+
+        </section>
+
+
+        <section class="agents">
+
+            <div class="section-header">
+                <div>
+                    <span class="eyebrow">YOUR AI TEAM</span>
+                    <h2>Meet your travel agents</h2>
+                    <p>Specialized AI agents working together for your journey.</p>
+                </div>
+            </div>
+
+
+            <div class="agent-grid">
+
+                <div class="agent-card">
+                    <div class="agent-top">
+                        <div class="agent-icon flight">✈</div>
+                        <span class="ready">● READY</span>
+                    </div>
+
+                    <h3>Flight Agent</h3>
+                    <p>Searches flight information and helps compare available routes.</p>
+
+                    <div class="agent-footer">
+                        AVIATIONSTACK API
+                    </div>
+                </div>
+
+
+                <div class="agent-card">
+                    <div class="agent-top">
+                        <div class="agent-icon hotel">⌂</div>
+                        <span class="ready">● READY</span>
+                    </div>
+
+                    <h3>Hotel Agent</h3>
+                    <p>Finds hotel suggestions based on your destination and budget.</p>
+
+                    <div class="agent-footer">
+                        TAVILY SEARCH
+                    </div>
+                </div>
+
+
+                <div class="agent-card">
+                    <div class="agent-top">
+                        <div class="agent-icon itinerary">▤</div>
+                        <span class="ready">● READY</span>
+                    </div>
+
+                    <h3>Itinerary Agent</h3>
+                    <p>Creates a practical day-by-day travel plan for your journey.</p>
+
+                    <div class="agent-footer">
+                        GROQ LLM
+                    </div>
+                </div>
+
+
+                <div class="agent-card">
+                    <div class="agent-top">
+                        <div class="agent-icon final">✦</div>
+                        <span class="ready">● READY</span>
+                    </div>
+
+                    <h3>Final Response Agent</h3>
+                    <p>Combines all results into one organized travel recommendation.</p>
+
+                    <div class="agent-footer">
+                        GROQ LLM
+                    </div>
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <footer>
+            <p>© Travel Agent. Your journey, intelligently planned.</p>
+            <span>Built with Multi-Agent AI ✦</span>
+        </footer>
+
+    </main>
+
+</div>
+
+</body>
+</html>
