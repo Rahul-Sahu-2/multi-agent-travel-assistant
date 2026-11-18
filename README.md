@@ -113,16 +113,6 @@ The multi-agent workflow processes the request and generates a structured travel
 - PDF itinerary export.
 - Cloud deployment and scalability improvements.
 
-## 🤝 Contributing
 
-Contributions are welcome!
-
-1. Fork the repository.
-2. Create a new branch.
-3. Make your changes.
-4. Commit your changes.
-5. Submit a pull request.
-
----
 
 ⭐ If you find this project useful, consider giving this repository a star!
