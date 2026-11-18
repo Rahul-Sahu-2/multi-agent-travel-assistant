@@ -1,191 +1,84 @@
 let currentThreadId = localStorage.getItem("travel_thread_id") || null;
-let latestAnswer = "";
-let latestPlanText = "";
-let lastUserMessage = "";
+let latestAnswerMarkdown = "";
 
-const travelForm = document.getElementById("travelForm");
-
-const originInput = document.getElementById("origin");
-const destinationInput = document.getElementById("destination");
-const durationInput = document.getElementById("duration");
-const budgetInput = document.getElementById("budget");
-const extraInput = document.getElementById("extra");
-
-const submitBtn = document.getElementById("submitBtn");
-
-const loadingSection = document.getElementById("loadingSection");
-const errorSection = document.getElementById("errorSection");
-const errorMessage = document.getElementById("errorMessage");
-const resultsContent = document.getElementById("resultsContent");
-
-const finalAnswer = document.getElementById("finalAnswer");
-const flightResults = document.getElementById("flightResults");
-const hotelResults = document.getElementById("hotelResults");
-const itineraryResults = document.getElementById("itineraryResults");
-
-const threadId = document.getElementById("threadId");
-
-const retryBtn = document.getElementById("retryBtn");
-const copyBtn = document.getElementById("copyBtn");
-const downloadBtn = document.getElementById("downloadBtn");
-const newTripBtn = document.getElementById("newTripBtn");
-
-const pdfContent = document.getElementById("pdfContent");
-
-
-function setButtonText(text) {
-    const textNode = Array.from(submitBtn.childNodes).find(
-        node => node.nodeType === Node.TEXT_NODE && node.textContent.trim()
-    );
-
-    if (textNode) {
-        textNode.textContent = ` ${text} `;
-    }
+function setPrompt(text) {
+    document.getElementById("userInput").value = text;
 }
-
 
 function setLoading(isLoading) {
-    submitBtn.disabled = isLoading;
+    const sendBtn = document.getElementById("sendBtn");
+    const btnText = document.getElementById("btnText");
+    const btnLoader = document.getElementById("btnLoader");
+
+    sendBtn.disabled = isLoading;
 
     if (isLoading) {
-        setButtonText("Planning Your Trip...");
+        btnText.classList.add("hidden");
+        btnLoader.classList.remove("hidden");
     } else {
-        setButtonText("Plan My Trip");
+        btnText.classList.remove("hidden");
+        btnLoader.classList.add("hidden");
     }
 }
-
-
-function hideAllSections() {
-    loadingSection.hidden = true;
-    errorSection.hidden = true;
-    resultsContent.hidden = true;
-}
-
-
-function showLoading() {
-    hideAllSections();
-
-    loadingSection.hidden = false;
-
-    loadingSection.scrollIntoView({
-        behavior: "smooth",
-        block: "center"
-    });
-}
-
 
 function showError(message) {
-    hideAllSections();
+    const errorBox = document.getElementById("errorBox");
 
-    errorMessage.textContent = message;
-    errorSection.hidden = false;
-
-    errorSection.scrollIntoView({
-        behavior: "smooth",
-        block: "center"
-    });
+    errorBox.textContent = message;
+    errorBox.classList.remove("hidden");
 }
 
+function hideError() {
+    const errorBox = document.getElementById("errorBox");
 
-function formatMarkdown(content) {
-    if (!content || !content.trim()) {
-        return "No information available.";
-    }
-
-    if (typeof marked === "undefined" || typeof DOMPurify === "undefined") {
-        return content;
-    }
-
-    const html = marked.parse(content);
-
-    return DOMPurify.sanitize(html);
+    errorBox.classList.add("hidden");
+    errorBox.textContent = "";
 }
 
+function showResult(answer, threadId) {
+    latestAnswerMarkdown = answer;
 
-function showResults(data) {
-    hideAllSections();
+    const resultSection = document.getElementById("resultSection");
+    const resultBox = document.getElementById("resultBox");
+    const threadInfo = document.getElementById("threadInfo");
 
-    latestAnswer = data.answer || "";
-
-    finalAnswer.innerHTML = formatMarkdown(data.answer);
-    flightResults.innerHTML = formatMarkdown(data.flight_results);
-    hotelResults.innerHTML = formatMarkdown(data.hotel_results);
-    itineraryResults.innerHTML = formatMarkdown(data.itinerary);
-
-    currentThreadId = data.thread_id || null;
-
-    if (currentThreadId) {
-        localStorage.setItem("travel_thread_id", currentThreadId);
+    if (typeof marked !== "undefined") {
+        resultBox.innerHTML = marked.parse(answer);
+    } else {
+        resultBox.innerText = answer;
     }
 
-    threadId.textContent = currentThreadId || "Not available";
+    threadInfo.textContent = `Thread ID: ${threadId}`;
 
-    latestPlanText = [
-        "TRAVEL AGENT - YOUR TRAVEL PLAN",
-        "",
-        "FINAL TRAVEL RECOMMENDATION",
-        data.answer || "",
-        "",
-        "FLIGHT INFORMATION",
-        data.flight_results || "",
-        "",
-        "HOTEL SUGGESTIONS",
-        data.hotel_results || "",
-        "",
-        "DAY-BY-DAY ITINERARY",
-        data.itinerary || ""
-    ].join("\n");
+    resultSection.classList.remove("hidden");
 
-    resultsContent.hidden = false;
-
-    resultsContent.scrollIntoView({
+    resultSection.scrollIntoView({
         behavior: "smooth",
         block: "start"
     });
 }
 
-
-function createTravelMessage() {
-    const origin = originInput.value.trim();
-    const destination = destinationInput.value.trim();
-    const duration = durationInput.value.trim();
-    const budget = budgetInput.value.trim();
-    const extra = extraInput.value.trim();
-
-    let message = `Plan a complete ${duration} days trip from ${origin} to ${destination}.`;
-
-    message += ` My total travel budget is ₹${budget}.`;
-
-    if (extra) {
-        message += ` Additional preferences: ${extra}`;
-    }
-
-    return message;
-}
-
-
 async function sendMessage() {
-    if (!travelForm.reportValidity()) {
+    hideError();
+
+    const input = document.getElementById("userInput");
+    const message = input.value.trim();
+
+    if (!message) {
+        showError("Please enter your travel request first.");
         return;
     }
 
-    const userInput = createTravelMessage();
-
-    lastUserMessage = userInput;
-
-    showLoading();
     setLoading(true);
 
     try {
         const response = await fetch("/api/travel", {
             method: "POST",
-
             headers: {
                 "Content-Type": "application/json"
             },
-
             body: JSON.stringify({
-                message: userInput,
+                message: message,
                 thread_id: currentThreadId
             })
         });
@@ -193,152 +86,98 @@ async function sendMessage() {
         const data = await response.json();
 
         if (!response.ok || !data.success) {
-            throw new Error(
-                data.error ||
-                data.detail ||
-                "Unable to generate your travel plan."
-            );
+            throw new Error(data.error || "Something went wrong.");
         }
 
-        showResults(data);
+        currentThreadId = data.thread_id;
+        localStorage.setItem("travel_thread_id", currentThreadId);
+
+        showResult(data.answer, data.thread_id);
 
     } catch (error) {
-        console.error("Travel API Error:", error);
-
-        showError(
-            error.message || "Something went wrong. Please try again."
-        );
-
+        showError(error.message);
     } finally {
         setLoading(false);
     }
 }
 
+function copyResult() {
+    const resultBox = document.getElementById("resultBox");
+    const text = resultBox.innerText;
 
-travelForm.addEventListener("submit", function (event) {
-    event.preventDefault();
-
-    sendMessage();
-});
-
-
-retryBtn.addEventListener("click", function () {
-    if (lastUserMessage) {
-        sendMessage();
-    }
-});
-
-
-copyBtn.addEventListener("click", async function () {
-    if (!latestPlanText) {
+    if (!text) {
         return;
     }
 
-    try {
-        await navigator.clipboard.writeText(latestPlanText);
+    navigator.clipboard.writeText(text)
+        .then(() => {
+            const copyBtn = document.querySelector(".copy-btn");
+            const oldText = copyBtn.textContent;
 
-        copyBtn.textContent = "Copied!";
+            copyBtn.textContent = "Copied!";
 
-        setTimeout(function () {
-            copyBtn.textContent = "Copy Plan";
-        }, 2000);
+            setTimeout(() => {
+                copyBtn.textContent = oldText;
+            }, 1400);
+        })
+        .catch(() => {
+            showError("Could not copy result.");
+        });
+}
 
-    } catch (error) {
-        console.error("Copy Error:", error);
+function downloadPDF() {
+    const pdfContent = document.getElementById("pdfContent");
 
-        showError("Unable to copy the travel plan. Please try again.");
-    }
-});
-
-
-downloadBtn.addEventListener("click", function () {
-    if (typeof html2pdf === "undefined") {
-        showError("PDF library could not load. Please refresh the page.");
+    if (!latestAnswerMarkdown || !pdfContent) {
+        showError("No travel plan available to download.");
         return;
     }
+
+    const downloadBtn = document.querySelector(".download-btn");
+    const oldText = downloadBtn.textContent;
+
+    downloadBtn.textContent = "Preparing PDF...";
+    downloadBtn.disabled = true;
 
     const options = {
-        margin: 10,
-
-        filename: "Travel-Agent-Trip-Plan.pdf",
-
+        margin: 0.5,
+        filename: "ai-travel-plan.pdf",
         image: {
             type: "jpeg",
             quality: 0.98
         },
-
         html2canvas: {
             scale: 2,
-            useCORS: true
+            useCORS: true,
+            backgroundColor: "#ffffff"
         },
-
         jsPDF: {
-            unit: "mm",
+            unit: "in",
             format: "a4",
             orientation: "portrait"
         },
-
         pagebreak: {
             mode: ["avoid-all", "css", "legacy"]
         }
     };
 
-    downloadBtn.disabled = true;
-    downloadBtn.textContent = "Generating PDF...";
-
     html2pdf()
         .set(options)
         .from(pdfContent)
         .save()
-        .then(function () {
+        .then(() => {
+            downloadBtn.textContent = oldText;
             downloadBtn.disabled = false;
-            downloadBtn.textContent = "Download PDF ↓";
         })
-        .catch(function (error) {
-            console.error("PDF Error:", error);
-
+        .catch(() => {
+            downloadBtn.textContent = oldText;
             downloadBtn.disabled = false;
-            downloadBtn.textContent = "Download PDF ↓";
-
-            showError("Unable to generate PDF. Please try again.");
+            showError("Could not download PDF.");
         });
-});
+}
 
-
-newTripBtn.addEventListener("click", function () {
-    currentThreadId = null;
-    latestAnswer = "";
-    latestPlanText = "";
-    lastUserMessage = "";
-
-    localStorage.removeItem("travel_thread_id");
-
-    travelForm.reset();
-
-    finalAnswer.textContent = "";
-    flightResults.textContent = "";
-    hotelResults.textContent = "";
-    itineraryResults.textContent = "";
-
-    threadId.textContent = "";
-
-    hideAllSections();
-
-    setLoading(false);
-
-    travelForm.scrollIntoView({
-        behavior: "smooth",
-        block: "start"
-    });
-
-    originInput.focus();
-});
-
-
-document.addEventListener("keydown", function (event) {
+document.addEventListener("keydown", function(event) {
     if (event.ctrlKey && event.key === "Enter") {
-        if (!submitBtn.disabled) {
-            sendMessage();
-        }
+        sendMessage();
     }
 });
