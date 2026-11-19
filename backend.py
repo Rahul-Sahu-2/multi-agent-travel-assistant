@@ -29,8 +29,11 @@ from mcp_client import (
     tavily_mcp_search,
     aviation_mcp_call,
     extract_destination,
-    forecast_mcp_search,
-    weather_mcp_search,
+)
+
+from tools.weather_tool import (
+    get_current_weather,
+    get_weather_forecast,
 )
 
 
@@ -59,8 +62,8 @@ if not GROQ_API_KEY:
 # LLM - original model kept
 # =========================
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    api_key=GROQ_API_KEY,
+    model="openai/gpt-oss-120b",
+    api_key=GROQ_API_KEY
 )
 
 # =========================
@@ -398,18 +401,14 @@ def hotel_agent(state: TravelState):
 # Weather Agent - original behavior kept
 # =========================
 def weather_agent(state: TravelState):
-    city = extract_destination(
-        state["user_query"]
-    )
+
+    city = extract_destination(state["user_query"])
 
     try:
-        weather_data = asyncio.run(
-            weather_mcp_search(city)
-        )
 
-        forecast_data = asyncio.run(
-            forecast_mcp_search(city)
-        )
+        weather_data = get_current_weather(city)
+
+        forecast_data = get_weather_forecast(city)
 
         weather_results = f"""
 Current Weather:
@@ -420,10 +419,10 @@ Forecast:
 """
 
     except Exception as exc:
+
         print(
-            f"WEATHER AGENT MCP ERROR: "
-            f"{type(exc).__name__}: {exc}",
-            flush=True,
+            f"WEATHER API ERROR: {type(exc).__name__}: {exc}",
+            flush=True
         )
 
         weather_results = (
@@ -441,8 +440,6 @@ Forecast:
             )
         ],
     }
-
-
 # =========================
 # Budget Agent - new specialist
 # =========================

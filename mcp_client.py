@@ -1,160 +1,231 @@
-from pathlib import Path
-import traceback
+import os
 
-import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+import certifi
+from dotenv import load_dotenv
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_groq import ChatGroq
 
-from backend import run_travel_agent, resume_travel_agent
 
-# This is kept from the original project to allow the existing synchronous
-# agent functions to call async MCP helpers inside FastAPI.
-import nest_asyncio
+# ==========================================
+# Environment configuration
+# ==========================================
 
-nest_asyncio.apply()
+os.environ["SSL_CERT_FILE"] = certifi.where()
+os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 
-BASE_DIR = Path(__file__).resolve().parent
+load_dotenv()
 
-app = FastAPI(
-    title="TripMate AI",
-    description=(
-        "LangGraph Multi-Agent Travel Planner with Supervisor, Guardrails, "
-        "Human-in-the-Loop, and FastAPI Frontend"
-    ),
-    version="2.0.0",
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+AVIATION_STACK_API_KEY = os.getenv("AVIATIONSTACK_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+
+AVIATION_ENV = os.environ.copy()
+AVIATION_ENV["AVIATION_STACK_API_KEY"] = (
+    AVIATION_STACK_API_KEY or ""
 )
 
-app.mount(
-    "/static",
-    StaticFiles(directory=str(BASE_DIR / "static")),
-    name="static",
+
+# ==========================================
+# LLM
+# ==========================================
+
+llm = ChatGroq(
+    model="openai/gpt-oss-120b",
+    api_key=GROQ_API_KEY
 )
 
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+# ==========================================
+# MCP client configuration
+# ==========================================
+
+client = MultiServerMCPClient(
+    {
+        "tavily": {
+            "transport": "streamable_http",
+            "url": (
+                "https://mcp.tavily.com/mcp/"
+                f"?tavilyApiKey={TAVILY_API_KEY}"
+            )
+        },
+
+        "aviationstack": {
+            "transport": "stdio",
+            "command": "uvx",
+            "args": [
+                "aviationstack-mcp"
+            ],
+            "env": AVIATION_ENV
+        }
+    }
+)
 
 
-class TravelRequest(BaseModel):
-    message: str
-    thread_id: str | None = None
+# ==========================================
+# Diagnostic function
+# ==========================================
+
+async def get_all_tools():
+
+    all_tools = []
+
+    for server_name in (
+        "tavily",
+        "aviationstack"
+    ):
+        try:
+            tools = await client.get_tools(
+                server_name=server_name
+            )
+
+            all_tools.extend(tools)
+
+            print(
+                f"\nAvailable tools from "
+                f"{server_name} MCP:\n"
+            )
+
+            for tool in tools:
+                print(tool.name)
+
+        except Exception as error:
+            print(
+                f"\nCould not connect to "
+                f"{server_name} MCP:\n{error}\n"
+            )
+
+    return all_tools
 
 
-class ApprovalRequest(BaseModel):
-    thread_id: str = Field(min_length=1)
-    approved: bool
-    feedback: str = ""
+# ==========================================
+# Tavily MCP tool
+# ==========================================
+
+search_tool = None
 
 
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={},
+async def initialize_mcp():
+
+    global search_tool
+
+    if search_tool is not None:
+        return
+
+    tools = await client.get_tools(
+        server_name="tavily"
     )
 
-
-@app.post("/api/travel")
-async def travel_planner(request_data: TravelRequest):
-    try:
-        user_message = request_data.message.strip()
-
-        if not user_message:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "error": "Message cannot be empty.",
-                },
-            )
-
-        result = run_travel_agent(
-            user_input=user_message,
-            thread_id=request_data.thread_id,
-        )
-
-        return JSONResponse(
-            content={
-                "success": True,
-                **result,
-            }
-        )
-
-    except Exception as exc:
-        print("ERROR:", exc)
-        traceback.print_exc()
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": str(exc),
-            },
-        )
-
-
-@app.post("/api/travel/approve")
-async def approve_travel_plan(request_data: ApprovalRequest):
-    try:
-        if not request_data.approved and not request_data.feedback.strip():
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "error": "Please provide revision feedback when rejecting the draft.",
-                },
-            )
-
-        result = resume_travel_agent(
-            thread_id=request_data.thread_id,
-            approved=request_data.approved,
-            feedback=request_data.feedback,
-        )
-
-        return JSONResponse(
-            content={
-                "success": True,
-                **result,
-            }
-        )
-
-    except Exception as exc:
-        print("APPROVAL ERROR:", exc)
-        traceback.print_exc()
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": str(exc),
-            },
-        )
-
-
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "ok",
-        "message": "TripMate AI API is running",
-        "features": [
-            "supervisor_agent",
-            "input_guardrail",
-            "human_in_the_loop",
-        ],
+    tools_by_name = {
+        tool.name: tool
+        for tool in tools
     }
 
-
-@app.get("/favicon.ico")
-async def favicon():
-    return JSONResponse(content={})
-
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "app:app",
-        host="127.0.0.1",
-        port=8000,
-        reload=True,
+    search_tool = tools_by_name.get(
+        "tavily_search"
     )
+
+    if search_tool is None:
+
+        available_tools = ", ".join(
+            tools_by_name.keys()
+        )
+
+        raise RuntimeError(
+            "Tavily MCP connected, but the "
+            "'tavily_search' tool was not found. "
+            f"Available tools: "
+            f"{available_tools or 'none'}"
+        )
+
+
+async def tavily_mcp_search(query: str):
+
+    await initialize_mcp()
+
+    result = await search_tool.ainvoke(
+        {
+            "query": query
+        }
+    )
+
+    return result
+
+
+# ==========================================
+# AviationStack MCP tools
+# ==========================================
+
+aviation_tools = {}
+
+
+async def initialize_aviation_tools():
+
+    global aviation_tools
+
+    if aviation_tools:
+        return
+
+    tools = await client.get_tools(
+        server_name="aviationstack"
+    )
+
+    aviation_tools = {
+        tool.name: tool
+        for tool in tools
+    }
+
+    if not aviation_tools:
+        raise RuntimeError(
+            "AviationStack MCP connected but "
+            "returned no tools."
+        )
+
+
+async def aviation_mcp_call(
+    tool_name: str,
+    tool_args: dict = None
+):
+
+    await initialize_aviation_tools()
+
+    tool = aviation_tools.get(tool_name)
+
+    if tool is None:
+
+        available_tools = ", ".join(
+            sorted(aviation_tools.keys())
+        )
+
+        raise ValueError(
+            f"AviationStack tool '{tool_name}' "
+            "was not found. "
+            f"Available tools: "
+            f"{available_tools or 'none'}"
+        )
+
+    result = await tool.ainvoke(
+        tool_args or {}
+    )
+
+    return result
+
+
+# ==========================================
+# Destination extractor
+# ==========================================
+
+def extract_destination(query: str):
+
+    prompt = f"""
+    Extract only the destination city or country.
+
+    Query:
+    {query}
+
+    Return only destination name.
+    """
+
+    response = llm.invoke(prompt)
+
+    return response.content.strip()
