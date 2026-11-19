@@ -5,7 +5,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-mcp = FastMCP("Weather MCP Server")
+PORT = int(os.getenv("PORT", "10000"))
+
+mcp = FastMCP(
+    "Weather MCP Server",
+    host="0.0.0.0",
+    port=PORT
+)
 
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
@@ -81,10 +87,4 @@ def get_forecast(city: str):
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "10000"))
-
-    mcp.run(
-        transport="streamable-http",
-        host="0.0.0.0",
-        port=port
-    )
+    mcp.run(transport="streamable-http")
