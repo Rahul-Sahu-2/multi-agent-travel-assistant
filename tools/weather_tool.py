@@ -1,94 +1,125 @@
-import os
+"""
+Weather tool using Open-Meteo (free, no API key needed).
+
+Keeps the same return shapes as the old OpenWeather version, so the
+weather agent and _format_weather() work without changes.
+"""
+
 import requests
-from dotenv import load_dotenv
 
-load_dotenv()
+GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+TIMEOUT = 15
 
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+# WMO weather codes used by Open-Meteo -> short English description
+WMO_DESCRIPTIONS = {
+    0: "clear sky",
+    1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+    45: "fog", 48: "freezing fog",
+    51: "light drizzle", 53: "drizzle", 55: "heavy drizzle",
+    56: "freezing drizzle", 57: "freezing drizzle",
+    61: "light rain", 63: "rain", 65: "heavy rain",
+    66: "freezing rain", 67: "freezing rain",
+    71: "light snow", 73: "snow", 75: "heavy snow", 77: "snow grains",
+    80: "light showers", 81: "showers", 82: "heavy showers",
+    85: "snow showers", 86: "heavy snow showers",
+    95: "thunderstorm", 96: "thunderstorm with hail", 99: "thunderstorm with hail",
+}
 
-BASE_URL = "https://api.openweathermap.org/data/2.5"
+
+def _describe(code) -> str:
+    try:
+        return WMO_DESCRIPTIONS.get(int(code), "unknown")
+    except (TypeError, ValueError):
+        return "unknown"
+
+
+def _geocode(city: str) -> dict:
+    """Find latitude/longitude and the official place name for a city."""
+    response = requests.get(
+        GEOCODE_URL,
+        params={"name": city, "count": 1, "language": "en", "format": "json"},
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    results = response.json().get("results") or []
+
+    if not results:
+        raise ValueError(f"Place not found for weather lookup: {city}")
+
+    place = results[0]
+    return {
+        "name": place.get("name", city),
+        "country_code": place.get("country_code", ""),
+        "latitude": place["latitude"],
+        "longitude": place["longitude"],
+    }
+
+
+def _fetch_forecast_json(place: dict, days: int = 5) -> dict:
+    response = requests.get(
+        FORECAST_URL,
+        params={
+            "latitude": place["latitude"],
+            "longitude": place["longitude"],
+            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,"
+                       "weather_code,wind_speed_10m",
+            "hourly": "temperature_2m,apparent_temperature,relative_humidity_2m,"
+                      "weather_code,wind_speed_10m",
+            "forecast_days": days,
+            "wind_speed_unit": "ms",   # match the old m/s output
+            "timezone": "auto",
+        },
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def get_current_weather(city: str):
-    """
-    Fetch current weather information for a city.
-    """
+    """Current weather for a city (same keys as the old OpenWeather version)."""
 
-    if not OPENWEATHER_API_KEY:
-        raise ValueError(
-            "OPENWEATHER_API_KEY is missing from environment variables."
-        )
+    place = _geocode(city)
+    data = _fetch_forecast_json(place, days=1)
+    current = data.get("current") or {}
 
-    response = requests.get(
-        f"{BASE_URL}/weather",
-        params={
-            "q": city,
-            "appid": OPENWEATHER_API_KEY,
-            "units": "metric"
-        },
-        timeout=15
-    )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    weather = data["weather"][0]
+    temperature = current.get("temperature_2m")
 
     return {
-        "city": data["name"],
-        "country": data["sys"]["country"],
-        "temperature": data["main"]["temp"],
-        "feels_like": data["main"]["feels_like"],
-        "humidity": data["main"]["humidity"],
-        "description": weather["description"],
-        "wind_speed": data["wind"]["speed"],
-        "min_temperature": data["main"]["temp_min"],
-        "max_temperature": data["main"]["temp_max"]
+        "city": place["name"],
+        "country": place["country_code"],
+        "temperature": temperature,
+        "feels_like": current.get("apparent_temperature"),
+        "humidity": current.get("relative_humidity_2m"),
+        "description": _describe(current.get("weather_code")),
+        "wind_speed": current.get("wind_speed_10m"),
+        "min_temperature": temperature,
+        "max_temperature": temperature,
     }
 
 
 def get_weather_forecast(city: str):
-    """
-    Fetch 5-day weather forecast for a city.
-    OpenWeather provides forecasts in 3-hour intervals.
-    """
+    """Hourly forecast for about 5 days (same keys as the old version)."""
 
-    if not OPENWEATHER_API_KEY:
-        raise ValueError(
-            "OPENWEATHER_API_KEY is missing from environment variables."
-        )
+    place = _geocode(city)
+    data = _fetch_forecast_json(place, days=5)
+    hourly = data.get("hourly") or {}
 
-    response = requests.get(
-        f"{BASE_URL}/forecast",
-        params={
-            "q": city,
-            "appid": OPENWEATHER_API_KEY,
-            "units": "metric"
-        },
-        timeout=15
-    )
-
-    response.raise_for_status()
-
-    data = response.json()
-
+    times = hourly.get("time", [])
     forecast_list = []
 
-    for item in data["list"]:
-        weather = item["weather"][0]
-
+    for i, timestamp in enumerate(times):
         forecast_list.append({
-            "date_time": item["dt_txt"],
-            "temperature": item["main"]["temp"],
-            "feels_like": item["main"]["feels_like"],
-            "humidity": item["main"]["humidity"],
-            "description": weather["description"],
-            "wind_speed": item["wind"]["speed"]
+            "date_time": timestamp.replace("T", " "),  # "2026-11-22 12:00"
+            "temperature": hourly["temperature_2m"][i],
+            "feels_like": hourly["apparent_temperature"][i],
+            "humidity": hourly["relative_humidity_2m"][i],
+            "description": _describe(hourly["weather_code"][i]),
+            "wind_speed": hourly["wind_speed_10m"][i],
         })
 
     return {
-        "city": data["city"]["name"],
-        "country": data["city"]["country"],
-        "forecast": forecast_list
+        "city": place["name"],
+        "country": place["country_code"],
+        "forecast": forecast_list,
     }
