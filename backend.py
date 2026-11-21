@@ -9,6 +9,7 @@ os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 from typing import Any, TypedDict, Annotated
 import operator
 import uuid
+import datetime
 import asyncio
 import json
 import psycopg
@@ -27,9 +28,18 @@ from langchain_groq import ChatGroq
 
 from mcp_client import (
     tavily_mcp_search,
+    tavily_hotel_research,
+    aviation_route_schedule,
     aviation_mcp_call,
     extract_destination,
 )
+
+try:
+    # Offline helper (airport database) - only used to turn "Tokyo" into "NRT".
+    from tools.flight_tool import resolve_location_to_iata
+except Exception as _exc:  # pragma: no cover
+    print(f"IATA resolver unavailable: {_exc}", flush=True)
+    resolve_location_to_iata = None
 
 from tools.weather_tool import (
     get_current_weather,
@@ -63,7 +73,10 @@ if not GROQ_API_KEY:
 # =========================
 llm = ChatGroq(
     model="openai/gpt-oss-120b",
-    api_key=GROQ_API_KEY
+    api_key=GROQ_API_KEY,
+    max_tokens=2500,          # caps output so input + output stays under Groq TPM limit
+    reasoning_effort="low",   # fewer hidden reasoning tokens
+    max_retries=1,
 )
 
 # =========================
@@ -88,6 +101,9 @@ class TravelState(TypedDict, total=False):
 
     # New budget + HITL state
     budget_results: str
+    budget_summary: str
+    budget_total_inr: float
+    budget_limit_inr: float
     approval_request: str
     approved: bool
     human_feedback: str
@@ -116,8 +132,255 @@ AGENT_ORDER = [
 ]
 
 
+
+# =========================
+# Token-saving helpers (Groq free tier: 8000 tokens/minute)
+# =========================
+import re
+import time
+from collections import Counter
+
+MAX_FLIGHT_CHARS = 1600
+MAX_HOTEL_CHARS = 2600
+MAX_WEATHER_CHARS = 1400
+MAX_BUDGET_CHARS = 1600
+MAX_ITINERARY_CHARS = 3500
+
+
+def _clip(value: Any, max_chars: int) -> str:
+    """Convert anything to text and cut it to max_chars."""
+    text = value if isinstance(value, str) else str(value or "")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rsplit(" ", 1)[0] + " ...[trimmed]"
+
+
+def _invoke(messages, retries: int = 4, max_tokens: int | None = None):
+    """llm.invoke with automatic wait+retry when Groq's per-minute limit is hit."""
+    for attempt in range(retries + 1):
+        try:
+            model = llm.bind(max_tokens=max_tokens) if max_tokens else llm
+            return model.invoke(messages)
+        except Exception as exc:
+            text = str(exc)
+            is_rate_limit = "429" in text or "rate_limit" in text.lower()
+            too_large = "413" in text or "too large" in text.lower()
+
+            if too_large or not is_rate_limit or attempt == retries:
+                raise
+
+            match = re.search(r"try again in ([0-9.]+)\s*(ms|s|m)", text)
+            wait = 20.0
+            if match:
+                value = float(match.group(1))
+                unit = match.group(2)
+                wait = value / 1000 if unit == "ms" else value * 60 if unit == "m" else value
+                wait += 1.5
+            wait = min(max(wait, 5.0), 60.0)
+            print(f"Groq rate limit hit, waiting {wait:.0f}s (retry {attempt + 1}/{retries})", flush=True)
+            time.sleep(wait)
+
+
+def _compact_hotels(raw: Any, max_chars: int = MAX_HOTEL_CHARS) -> str:
+    """Shrink Tavily MCP output to title + url + short snippet for the top results."""
+    try:
+        data = raw
+        if isinstance(data, list):
+            # langchain-mcp-adapters may return [{"type": "text", "text": "..."}]
+            parts = []
+            for item in data:
+                if isinstance(item, dict) and "text" in item:
+                    parts.append(item["text"])
+                else:
+                    parts.append(str(item))
+            data = "\n".join(parts)
+
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                return _clip(data, max_chars)
+
+        results = data.get("results", []) if isinstance(data, dict) else []
+        if not results:
+            return _clip(data, max_chars)
+
+        lines = []
+        for i, r in enumerate(results[:5], 1):
+            title = _clip(r.get("title", "Unknown"), 90)
+            url = r.get("url", "")
+            snippet = _clip(r.get("content", ""), 280)
+            lines.append(f"{i}. {title} ({url}): {snippet}")
+        return _clip("\n".join(lines), max_chars)
+    except Exception:
+        return _clip(raw, max_chars)
+
+
+def _format_weather(current: dict, forecast: dict) -> str:
+    """One short line for now + one line per forecast day (min/max/condition)."""
+    lines = []
+
+    if isinstance(current, dict):
+        lines.append(
+            f"Now in {current.get('city', '')}: {current.get('temperature')}C "
+            f"(feels {current.get('feels_like')}C), {current.get('description', '')}, "
+            f"humidity {current.get('humidity')}%, wind {current.get('wind_speed')} m/s."
+        )
+
+    days: dict[str, list] = {}
+    for item in (forecast or {}).get("forecast", []):
+        day = str(item.get("date_time", ""))[:10]
+        days.setdefault(day, []).append(item)
+
+    if days:
+        lines.append("Forecast:")
+    for day, items in days.items():
+        temps = [i["temperature"] for i in items if i.get("temperature") is not None]
+        cond = Counter(i.get("description", "") for i in items).most_common(1)[0][0]
+        if temps:
+            lines.append(f"- {day}: {min(temps):.0f}-{max(temps):.0f}C, {cond}")
+
+    return "\n".join(lines)
+
+
+# =========================
+# Budget helpers - the arithmetic and the verdict are done in code, never by the LLM
+# =========================
+def _to_number(value: Any):
+    """'₹ 1,20,000' / '34800' / 34800.0 -> float, else None."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    match = re.search(r"\d[\d,]*\.?\d*", str(value or ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _inr(amount: float) -> str:
+    """Format as ₹1,10,000 (Indian digit grouping)."""
+    n = int(round(amount))
+    digits = str(abs(n))
+    if len(digits) > 3:
+        head, tail = digits[:-3], digits[-3:]
+        head = re.sub(r"(\d)(?=(\d\d)+$)", r"\1,", head)
+        digits = f"{head},{tail}"
+    return f"{'-' if n < 0 else ''}₹{digits}"
+
+
+_UNIT = {"k": 1e3, "lakh": 1e5, "lakhs": 1e5, "lac": 1e5, "lacs": 1e5, "crore": 1e7}
+
+
+def _parse_budget_inr(budget_field: Any, query: str):
+    """Return the user's total budget in INR, or None when it is not given / not in INR."""
+
+    def to_inr(text: str, need_keyword: bool):
+        t = str(text or "").lower().replace(",", "")
+        if any(sym in t for sym in ("$", "usd", "€", "eur", "£", "gbp", "yen", "jpy")):
+            return None  # other currencies are not converted here
+        pattern = (
+            r"budget[^0-9]{0,40}(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crore|k)?\b"
+            if need_keyword
+            else r"(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crore|k)?\b"
+        )
+        m = re.search(pattern, t)
+        if not m:
+            return None
+        value = float(m.group(1)) * _UNIT.get(m.group(2) or "", 1)
+        return value if value >= 1000 else None
+
+    return to_inr(budget_field, False) or to_inr(query, True)
+
+
+def _build_budget_summary(plan: dict, limit):
+    """Turn the LLM's cost items into a table + verdict. Returns (markdown, total)."""
+    rows = []
+    for item in plan.get("items", []) if isinstance(plan, dict) else []:
+        amount = _to_number(item.get("amount_inr"))
+        if amount is None or amount < 0:
+            continue
+        basis = "Live search" if str(item.get("basis", "")).lower() == "search" else "Estimate"
+        category = str(item.get("category", "Other"))[:40].replace("|", "/")
+        note = str(item.get("note", ""))[:110].replace("|", "/").replace("\n", " ")
+        rows.append((category, amount, basis, note))
+
+    if not rows:
+        return ("Budget total could not be calculated automatically. "
+                "Please verify prices on booking websites."), None
+
+    total = sum(r[1] for r in rows)
+    live = sum(r[1] for r in rows if r[2] == "Live search")
+    live_pct = round(100 * live / total) if total else 0
+    biggest = max(rows, key=lambda r: r[1])
+
+    lines = ["| Category | Cost | Basis | Note |", "|---|---:|---|---|"]
+    for category, amount, basis, note in rows:
+        lines.append(f"| {category} | {_inr(amount)} | {basis} | {note} |")
+    lines.append(f"| **Total (all travellers)** | **{_inr(total)}** | | |")
+    table = "\n".join(lines)
+
+    if limit:
+        if total <= limit:
+            verdict = (
+                f"✅ **This trip fits your budget.** Estimated total {_inr(total)} "
+                f"vs your budget {_inr(limit)} (about {_inr(limit - total)} left)."
+            )
+        else:
+            short = total - limit
+            over_pct = round(100 * short / limit)
+            verdict = (
+                f"❌ **This trip is NOT possible within {_inr(limit)}.** "
+                f"The estimated minimum total is **{_inr(total)}**, which is "
+                f"{_inr(short)} ({over_pct}%) more than your budget."
+            )
+    else:
+        verdict = f"Estimated total: **{_inr(total)}** (no budget was given)."
+
+    parts = [verdict, "", table, "",
+             f"Biggest cost: {biggest[0]} ({_inr(biggest[1])})."]
+
+    if limit and total > limit:
+        tips = [str(t)[:140] for t in plan.get("savings_tips", [])[:4] if t]
+        if tips:
+            parts += ["", "**How you could reduce the cost:**"] + [f"- {t}" for t in tips]
+        parts.append(f"- Or raise the budget to at least {_inr(total)}.")
+
+    assumptions = [str(a)[:140] for a in plan.get("assumptions", [])[:4] if a]
+    if assumptions:
+        parts += ["", "**Assumptions:**"] + [f"- {a}" for a in assumptions]
+
+    parts += ["", f"_Only about {live_pct}% of this total comes from live search results; "
+                  "the rest is an estimate. Prices are not an exact quote - "
+                  "verify on the airline/hotel websites before booking._"]
+    return "\n".join(parts), total
+
+
+def _date_rule() -> str:
+    today = datetime.date.today().strftime("%d %B %Y")
+    return (
+        f"Today is {today}. Any date before today is in the past: never tell the user "
+        "to book or do anything by a past date. If the trip starts within about 2 months, "
+        "tell the user to book flights immediately and that last-minute fares can be "
+        "higher than the quoted price."
+    )
+
+
+def _trip_cities(state) -> list:
+    """Cities chosen by the supervisor; falls back to the destination text."""
+    constraints = state.get("trip_constraints", {}) or {}
+    cities = [c for c in constraints.get("cities", []) if c]
+    if cities:
+        return cities[:3]
+    destination = constraints.get("destination")
+    return [destination] if destination else []
+
+
 def _llm_text(system_prompt: str, user_prompt: str) -> str:
-    response = llm.invoke(
+    response = _invoke(
         [
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),
@@ -145,6 +408,7 @@ def _empty_constraints() -> dict[str, Any]:
         "budget": "",
         "travel_style": "",
         "special_preferences": [],
+        "cities": [],
     }
 
 
@@ -219,6 +483,10 @@ Available agents:
 - budget_agent: cost, affordability, price limits, or budget feasibility
 - itinerary_agent: creates the integrated travel plan and must always be included
 
+"cities" = the 1-3 real cities where the traveller will actually stay, in visiting order.
+If the destination is a whole country or region, choose the classic cities for that trip
+length (for example India 7 days -> Delhi, Agra, Jaipur). Use real city names only.
+
 Return strict JSON only using this schema:
 {{
   "selected_agents": ["flight_agent", "hotel_agent", "weather_agent", "budget_agent", "itinerary_agent"],
@@ -228,7 +496,8 @@ Return strict JSON only using this schema:
     "duration": "",
     "budget": "",
     "travel_style": "",
-    "special_preferences": []
+    "special_preferences": [],
+    "cities": []
   }},
   "reasoning": ""
 }}
@@ -253,10 +522,22 @@ User request:
         if "itinerary_agent" not in selected_agents:
             selected_agents.append("itinerary_agent")
 
+        # The total cost + budget verdict is always needed.
+        if "budget_agent" not in selected_agents:
+            selected_agents.append("budget_agent")
+        selected_agents = [n for n in AGENT_ORDER if n in selected_agents]
+
         constraints = _empty_constraints()
         parsed_constraints = parsed.get("trip_constraints", {})
         if isinstance(parsed_constraints, dict):
             constraints.update(parsed_constraints)
+
+        raw_cities = constraints.get("cities", [])
+        if isinstance(raw_cities, str):
+            raw_cities = [raw_cities]
+        constraints["cities"] = [
+            str(c).strip() for c in raw_cities if str(c).strip()
+        ][:3] if isinstance(raw_cities, list) else []
 
         reasoning = str(parsed.get("reasoning", "")).strip()
         llm_calls += 1
@@ -298,50 +579,144 @@ def guardrail_blocked_agent(state: TravelState):
 # Flight Agent - original behavior kept
 # =========================
 FLIGHT_AGENT_PROMPT = """
-You are a travel flight expert.
+You are a travel flight analyst. Today's date is {today}.
 
 User Query:
 {query}
 
-Airport Information:
-{airport_data}
+Route (from the supervisor): {origin} -> {destination}   (airports: {dep_iata} -> {arr_iata})
 
-Airline Information:
-{airline_data}
+SOURCE A - AviationStack live departure board (TODAY only, real schedule data):
+{aviation_data}
 
-Generate:
-1. Likely departure airport
-2. Likely arrival airport
-3. Airlines serving this route
-4. Typical flight duration
-5. Estimated airfare range
-6. Peak season pricing warning
-7. Booking advice
+SOURCE B - live web search (fares, airlines, durations):
+{search_data}
 
-Return concise travel guidance.
+Rules:
+- Use ONLY facts that appear in Source A or Source B. Do not invent fares, airlines,
+  flight numbers, times or sources.
+- Flight numbers and times may come ONLY from Source A. Say they are from today's board
+  and that the schedule on the travel date can differ.
+- Fares may come ONLY from Source B. Name the site/URL for every fare. If there is no
+  price, write "price not found in search results".
+- Do NOT claim to use Google Flights, Skyscanner or any tool that is not in the sources.
+- {date_rule}
+- If both sources are empty, say clearly: "No live flight data found", then give only a short,
+  clearly labelled GENERAL ESTIMATE and tell the user to verify on an airline/OTA website.
+
+Return concise guidance:
+1. Departure and arrival airports
+2. Flights/airlines found (with source A or B)
+3. Typical duration (if found)
+4. Fares found (with source) or "not found"
+5. Booking advice
 """
+
+
+def _is_failed_tool_output(raw: Any) -> bool:
+    """MCP tools return {"ok": false, ...} instead of raising."""
+    text = str(raw)
+    return (
+        '"ok": false' in text
+        or "function_access_restricted" in text
+        or "Access Restricted" in text
+    )
+
+
+def _guess_iata(place: str):
+    """'Tokyo, Japan' -> 'NRT' using the offline airport helper; None if unknown."""
+    if not place or resolve_location_to_iata is None:
+        return None
+    for candidate in (place.split(",")[0], place):
+        try:
+            code = resolve_location_to_iata(candidate)
+        except Exception:
+            code = None
+        if code:
+            return code
+    return None
+
+
+def _format_board(result: dict, dep: str, arr: str) -> str:
+    if not result.get("ok"):
+        return f"AviationStack data unavailable: {result.get('error', 'unknown error')}"
+
+    matches = result.get("matches", [])
+    if not matches:
+        return (
+            f"No flight from {dep} to {arr} on today's departure board "
+            f"({result.get('scanned', 0)} departures checked). "
+            "This only means no direct flight was listed today."
+        )
+
+    lines = [f"Direct flights {dep} -> {arr} on today's board:"]
+    for f in matches:
+        lines.append(
+            f"- {f.get('airline')} {f.get('flight_number')}: departs "
+            f"{f.get('departure_scheduled_time')}, arrives "
+            f"{f.get('arrival_scheduled_time')} (terminal {f.get('departure_terminal') or 'n/a'})"
+        )
+    return "\n".join(lines)
 
 
 def flight_agent(state: TravelState):
     print("\nINSIDE FLIGHT AGENT\n")
     query = state["user_query"]
+    constraints = state.get("trip_constraints", {}) or {}
+    origin = constraints.get("origin") or "the origin city in the user query"
+    destination = constraints.get("destination") or "the destination in the user query"
+    today = datetime.date.today().strftime("%d %B %Y")
+
+    cities = _trip_cities(state)
+    arrival_city = cities[0] if cities else destination
+
+    dep_iata = _guess_iata(constraints.get("origin", ""))
+    arr_iata = _guess_iata(arrival_city) or _guess_iata(constraints.get("destination", ""))
+
+    # ---- Source A: AviationStack MCP (via mcp_client) ----
+    if dep_iata and arr_iata:
+        try:
+            board = asyncio.run(aviation_route_schedule(dep_iata, arr_iata))
+        except Exception as exc:
+            print(f"AVIATIONSTACK MCP ERROR: {type(exc).__name__}: {exc}", flush=True)
+            board = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        aviation_data = _format_board(board, dep_iata, arr_iata)
+    else:
+        aviation_data = "Airport codes could not be determined, so no live board was checked."
+    print("\nAVIATIONSTACK RESULT:", aviation_data[:500], flush=True)
+
+    # ---- Source B: Tavily MCP (via mcp_client) ----
+    search_query = (
+        f"flights from {origin} to {arrival_city} airlines non-stop flight duration "
+        f"round trip ticket price {constraints.get('duration', '')}"
+    )
+    try:
+        raw = asyncio.run(tavily_mcp_search(search_query, max_results=5))
+        search_data = _compact_hotels(raw, 1500)
+
+        if _is_failed_tool_output(raw) or not search_data.strip():
+            search_data = "No live flight search results found."
+        print("\nFLIGHT SEARCH RESULTS:", search_data[:500], flush=True)
+    except Exception as exc:
+        print(f"FLIGHT AGENT MCP ERROR: {type(exc).__name__}: {exc}", flush=True)
+        search_data = "No live flight search results (search service unavailable)."
 
     try:
-        airports = asyncio.run(aviation_mcp_call("list_airports"))
-        airlines = asyncio.run(aviation_mcp_call("list_airlines"))
-
-        print("\nAIRPORTS:", airports)
-        print("\nAIRLINES:", airlines)
-
         prompt = FLIGHT_AGENT_PROMPT.format(
+            today=today,
+            date_rule=_date_rule(),
             query=query,
-            airport_data=str(airports)[:3000],
-            airline_data=str(airlines)[:3000],
+            origin=origin,
+            destination=destination,
+            dep_iata=dep_iata or "?",
+            arr_iata=arr_iata or "?",
+            aviation_data=_clip(aviation_data, 900),
+            search_data=_clip(search_data, 1500),
         )
 
-        response = llm.invoke(
+        response = _invoke(
             [
-                SystemMessage(content="You are an expert travel flight planner."),
+                SystemMessage(content="You are a careful travel flight analyst who never invents data."),
                 HumanMessage(content=prompt),
             ]
         )
@@ -360,15 +735,19 @@ def flight_agent(state: TravelState):
 # Hotel Agent - original behavior kept
 # =========================
 def hotel_agent(state: TravelState):
-    query = (
-        f"Best hotels for "
-        f"{state['user_query']}"
-    )
+    constraints = state.get("trip_constraints", {}) or {}
+    cities = _trip_cities(state) or [state["user_query"][:100]]
+    extra = str(constraints.get("travel_style", "")).strip()  # not the total trip budget
 
     try:
-        hotel_results = asyncio.run(
-            tavily_mcp_search(query)
-        )
+        collected = asyncio.run(tavily_hotel_research(cities, extra))
+
+        per_city = MAX_HOTEL_CHARS // max(len(collected), 1)
+        sections = []
+        for city, raw in collected:
+            sections.append(f"### Hotels in {city}\n{_compact_hotels(raw, per_city)}")
+        hotel_results = "\n\n".join(sections)
+        print("\nHOTEL RESULTS:", hotel_results[:600], flush=True)
 
     except Exception as exc:
         print(
@@ -379,9 +758,8 @@ def hotel_agent(state: TravelState):
 
         hotel_results = (
             "Live hotel search is temporarily unavailable. "
-            "Provide general accommodation and neighborhood "
-            "guidance based on the destination and clearly "
-            "label it as non-live advice."
+            "Do not name any specific hotel; give only general area guidance "
+            "and label it as non-live advice."
         )
 
     return {
@@ -401,35 +779,35 @@ def hotel_agent(state: TravelState):
 # Weather Agent - original behavior kept
 # =========================
 def weather_agent(state: TravelState):
+    cities = _trip_cities(state)
 
-    city = extract_destination(state["user_query"])
+    if not cities:
+        cities = [extract_destination(state["user_query"])]
 
-    try:
+    sections = []
 
-        weather_data = get_current_weather(city)
+    for city in cities[:3]:
+        try:
+            # weather comes from tools/weather_tool.py (OpenWeather), not MCP
+            weather_data = get_current_weather(city)
+            forecast_data = get_weather_forecast(city)
+            sections.append(f"## {city}\n{_format_weather(weather_data, forecast_data)}")
+        except Exception as exc:
+            print(
+                f"WEATHER API ERROR ({city}): {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
-        forecast_data = get_weather_forecast(city)
-
-        weather_results = f"""
-Current Weather:
-{weather_data}
-
-Forecast:
-{forecast_data}
-"""
-
-    except Exception as exc:
-
-        print(
-            f"WEATHER API ERROR: {type(exc).__name__}: {exc}",
-            flush=True
-        )
-
+    if sections:
         weather_results = (
-            f"Live weather information for {city} "
-            "is temporarily unavailable. Give general "
-            "seasonal guidance and advise the traveler "
-            "to verify the forecast before departure."
+            "Live OpenWeather data: current weather + forecast for the next ~5 days "
+            "(this is NOT the weather on the travel dates).\n\n" + "\n\n".join(sections)
+        )
+    else:
+        weather_results = (
+            f"Live weather information for {', '.join(cities)} is unavailable. "
+            "Give general seasonal guidance, clearly labelled as general knowledge, "
+            "and advise the traveler to verify the forecast before departure."
         )
 
     return {
@@ -440,46 +818,76 @@ Forecast:
             )
         ],
     }
+
+
 # =========================
 # Budget Agent - new specialist
 # =========================
 def budget_agent(state: TravelState):
+    constraints = state.get("trip_constraints", {}) or {}
+    limit = _parse_budget_inr(constraints.get("budget", ""), state["user_query"])
+
     prompt = f"""
-Analyze whether this trip is realistic for the user's budget.
+Estimate the REALISTIC MINIMUM total cost of this trip in Indian rupees (INR).
+Today's date is {datetime.date.today().strftime("%d %B %Y")}.
 
 User Query:
 {state['user_query']}
 
 Trip Constraints:
-{state.get('trip_constraints', {})}
+{constraints}
 
-Flight Results:
-{state.get('flight_results', '')}
+Flight Results (live web search):
+{_clip(state.get('flight_results', ''), MAX_FLIGHT_CHARS)}
 
-Hotel Results:
-{state.get('hotel_results', '')}
+Hotel Results (live web search):
+{_clip(state.get('hotel_results', ''), MAX_HOTEL_CHARS)}
 
-Weather Results:
-{state.get('weather_results', '')}
+Rules:
+- Do NOT lower any number to make the trip fit the user's budget. Give honest, realistic minimum costs.
+- Each amount is the cost for ALL travellers together for the WHOLE trip, in INR.
+- Nights of stay = number of trip days - 1. Count travellers from the query (default 1 if unclear).
+- "basis" = "search" ONLY when the number is stated in the Flight or Hotel results above
+  (a fare "from $X" is usually per person: multiply by travellers). Otherwise "estimate".
+- If the search result does not say whether a fare is one-way or round-trip, or per person
+  or for the whole group, use the more expensive reading and say so in "assumptions".
+- If you convert a currency, state the rate you used in "assumptions".
+- Use exactly these categories: Flights, Accommodation, Local transport, Food,
+  Entry fees & activities, Visa / insurance / SIM / misc.
 
-Return:
-1. Estimated cost categories
-2. Budget risk areas
-3. Money-saving suggestions
-4. Overall feasibility
-
-If exact live prices are unavailable, clearly label estimates as approximate.
+Return strict JSON only:
+{{
+  "items": [
+    {{"category": "Flights", "amount_inr": 0, "basis": "search or estimate", "note": "short reason"}}
+  ],
+  "savings_tips": ["short practical tip"],
+  "assumptions": ["short assumption"]
+}}
 """
 
-    response = llm.invoke(
-        [
-            SystemMessage(content="You are a practical travel budget analyst."),
-            HumanMessage(content=prompt),
-        ]
-    )
+    try:
+        response = _invoke(
+            [
+                SystemMessage(content="You are an honest travel budget analyst. Return strict JSON only."),
+                HumanMessage(content=prompt),
+            ],
+            max_tokens=1500,
+        )
+        plan = _json_from_llm(str(response.content))
+        summary, total = _build_budget_summary(plan, limit)
+    except Exception as exc:
+        print(f"BUDGET AGENT ERROR: {type(exc).__name__}: {exc}", flush=True)
+        summary, total = (
+            "Budget total could not be calculated automatically. "
+            "Please verify prices on booking websites.",
+            None,
+        )
 
     return {
-        "budget_results": response.content,
+        "budget_results": summary,
+        "budget_summary": summary,
+        "budget_total_inr": total or 0.0,
+        "budget_limit_inr": limit or 0.0,
         "messages": [AIMessage(content="Budget assessment generated.")],
         "llm_calls": state.get("llm_calls", 0) + 1,
     }
@@ -499,22 +907,34 @@ Trip Constraints:
 {state.get('trip_constraints', {})}
 
 Flight Results:
-{state.get('flight_results', '')}
+{_clip(state.get('flight_results', ''), MAX_FLIGHT_CHARS)}
 
 Hotel Results:
-{state.get('hotel_results', '')}
+{_clip(state.get('hotel_results', ''), MAX_HOTEL_CHARS)}
 
 Weather Results:
-{state.get('weather_results', '')}
+{_clip(state.get('weather_results', ''), MAX_WEATHER_CHARS)}
 
 Budget Results:
-{state.get('budget_results', '')}
+{_clip(state.get('budget_results', ''), MAX_BUDGET_CHARS)}
 
 Make the itinerary practical, budget-aware, and easy to follow.
 Create a clear draft that is ready for human review.
+
+Strict rules:
+- {_date_rule()}
+- Do NOT invent flight numbers or flight times. Refer to "the flight" generally.
+- Name a specific hotel ONLY if it appears in the Hotel Results above; otherwise say
+  "hotel to be chosen (area: ...)". Never suggest hotel names from your own memory,
+  not even as examples.
+- Nights of stay = number of trip days - 1. Do not add extra nights.
+- Mark entry fees and food costs as approximate and do not add up an overall trip total
+  (the system adds the official budget summary).
+- If the Budget Results say the trip is NOT possible within the budget, keep the plan lean
+  and never claim that it fits.
 """
 
-    response = llm.invoke(
+    response = _invoke(
         [
             SystemMessage(content="You are an expert travel planner."),
             HumanMessage(content=prompt),
@@ -590,19 +1010,19 @@ Supervisor Constraints:
 {state.get('trip_constraints', {})}
 
 Flights:
-{state.get('flight_results', '')}
+{_clip(state.get('flight_results', ''), MAX_FLIGHT_CHARS)}
 
 Hotels:
-{state.get('hotel_results', '')}
+{_clip(state.get('hotel_results', ''), MAX_HOTEL_CHARS)}
 
 Weather:
-{state.get('weather_results', '')}
+{_clip(state.get('weather_results', ''), MAX_WEATHER_CHARS)}
 
 Budget Analysis:
-{state.get('budget_results', '')}
+{_clip(state.get('budget_results', ''), MAX_BUDGET_CHARS)}
 
 Draft Itinerary:
-{state.get('itinerary', '')}
+{_clip(state.get('itinerary', ''), MAX_ITINERARY_CHARS)}
 
 Format the final answer beautifully using these sections:
 1. Trip Summary
@@ -610,29 +1030,52 @@ Format the final answer beautifully using these sections:
 3. Hotel Suggestions
 4. Weather Information
 5. Day-by-Day Itinerary
-6. Estimated Budget
-7. Final Recommendations
+6. Final Recommendations
+7. Estimated Budget & Verdict  (write ONLY the exact text [[BUDGET_SUMMARY]] under this heading; the system fills it in)
 
 Important:
 - Be clear and practical.
+- {_date_rule()}
+- Use ONLY the Flights, Hotels and Weather sections above for facts. If a price, link or
+  hotel detail is not there, write "not found in live search" instead of inventing it.
+- Include the source links that appear in the Flights and Hotels sections.
+- Clearly label any fare or price that is only an estimate, and tell the user to verify it before booking.
+- Do NOT claim data from Google Flights, Skyscanner or any source not present above.
 - Mention that live flight APIs may not provide ticket prices when pricing is unavailable.
 - Include weather-based travel advice.
 - Keep the response useful for real travel planning.
 - Incorporate the human feedback when revision was requested.
+- Do not write any overall trip total or budget verdict yourself; only the [[BUDGET_SUMMARY]] placeholder.
+- Nights of stay = number of trip days - 1.
+- Do not invent flight numbers/times or hotel names that are not in the sections above.
+  Never suggest hotel names from your own memory, not even as examples.
+- Hotels: for each city list up to 2 hotels that appear in the Hotels section, with the
+  price if the section states it and the source link. If none, write "no specific hotel found in live search".
+- Weather: show the live data from the Weather section. If the travel dates are beyond that
+  forecast, add a short note labelled "typical seasonal climate (general knowledge)".
 """
 
-    response = llm.invoke(
+    response = _invoke(
         [
             SystemMessage(
                 content="You are a professional AI travel booking assistant."
             ),
             HumanMessage(content=final_prompt),
-        ]
+        ],
+        max_tokens=4000,
     )
 
+    final_text = str(response.content)
+    budget_block = state.get("budget_summary") or "Budget estimate unavailable."
+
+    if "[[BUDGET_SUMMARY]]" in final_text:
+        final_text = final_text.replace("[[BUDGET_SUMMARY]]", budget_block)
+    else:
+        final_text += "\n\n## Estimated Budget & Verdict\n" + budget_block
+
     return {
-        "final_response": response.content,
-        "messages": [response],
+        "final_response": final_text,
+        "messages": [AIMessage(content=final_text)],
         "llm_calls": state.get("llm_calls", 0) + 1,
     }
 
@@ -754,6 +1197,8 @@ def _serialize_result(
         answer = interrupt_payload.get("draft_itinerary") or result.get(
             "itinerary", ""
         )
+        if result.get("budget_summary"):
+            answer = f"{answer}\n\n---\n\n## Budget check\n{result['budget_summary']}"
 
     return {
         "thread_id": thread_id,
@@ -804,6 +1249,9 @@ def run_travel_agent(user_input: str, thread_id: str | None = None):
             "hotel_results": "",
             "weather_results": "",
             "budget_results": "",
+            "budget_summary": "",
+            "budget_total_inr": 0.0,
+            "budget_limit_inr": 0.0,
             "itinerary": "",
             "approval_request": "",
             "approved": False,

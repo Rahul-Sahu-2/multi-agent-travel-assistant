@@ -1,4 +1,5 @@
 import os
+import json
 
 import certifi
 from dotenv import load_dotenv
@@ -139,17 +140,69 @@ async def initialize_mcp():
         )
 
 
-async def tavily_mcp_search(query: str):
+async def tavily_mcp_search(query: str, **options):
+    """
+    Run a Tavily MCP search. Optional tool options (e.g. max_results=5,
+    search_depth="advanced") are tried first; if the server rejects them,
+    the plain query is used so the search never breaks.
+    """
 
     await initialize_mcp()
 
-    result = await search_tool.ainvoke(
-        {
-            "query": query
-        }
-    )
+    payload = {"query": query}
+    payload.update(options)
 
-    return result
+    try:
+        return await search_tool.ainvoke(payload)
+    except Exception as exc:
+        if not options:
+            raise
+
+        print(
+            f"Tavily options rejected ({type(exc).__name__}); "
+            "retrying with plain query.",
+            flush=True,
+        )
+
+        return await search_tool.ainvoke({"query": query})
+
+
+async def tavily_hotel_research(places, extra: str = ""):
+    """
+    Hotel information from Tavily MCP, one search per city/place
+    (a country-wide search returns only generic articles).
+
+    places: a list of city names (or a single string).
+    Returns a list of (city, raw_result). Raises only if every search fails.
+    """
+
+    if isinstance(places, str):
+        places = [places]
+
+    collected = []
+    last_error = None
+
+    for place in places:
+        query = (
+            f"best 3 star hotels in {place} price per night "
+            f"booking reviews rating {extra}"
+        ).strip()
+
+        try:
+            result = await tavily_mcp_search(query, max_results=4)
+            collected.append((place, result))
+        except Exception as exc:
+            last_error = exc
+            print(
+                f"Tavily hotel search failed ({place}): "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+    if not collected:
+        raise RuntimeError(f"All Tavily hotel searches failed: {last_error}")
+
+    return collected
 
 
 # ==========================================
@@ -209,6 +262,79 @@ async def aviation_mcp_call(
     )
 
     return result
+
+
+def mcp_result_text(result) -> str:
+    """Normalize an MCP tool result (str or list of content blocks) to plain text."""
+
+    if isinstance(result, str):
+        return result
+
+    if isinstance(result, list):
+        parts = []
+
+        for item in result:
+            if isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+            else:
+                parts.append(str(item))
+
+        return "\n".join(parts)
+
+    return str(result)
+
+
+async def aviation_route_schedule(
+    dep_iata: str,
+    arr_iata: str,
+    limit: int = 100
+):
+    """
+    Today's live departure board of dep_iata (AviationStack MCP tool
+    'flight_arrival_departure_schedule'), filtered to flights that
+    arrive at arr_iata.
+
+    Always returns a dict:
+      {"ok": True,  "scanned": N, "matches": [...]}
+      {"ok": False, "error": "..."}   (for example plan restrictions)
+    """
+
+    raw = await aviation_mcp_call(
+        "flight_arrival_departure_schedule",
+        {
+            "airport_iata_code": dep_iata,
+            "schedule_type": "departure",
+            "number_of_flights": limit
+        }
+    )
+
+    text = mcp_result_text(raw)
+
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {"ok": False, "error": text[:300]}
+
+    if not data.get("ok"):
+        return {
+            "ok": False,
+            "error": str(data.get("error", "unknown error"))[:300]
+        }
+
+    board = data.get("data", []) or []
+
+    matches = [
+        flight
+        for flight in board
+        if str(flight.get("arrival_airport_code", "")).upper()
+        == arr_iata.upper()
+    ]
+
+    return {
+        "ok": True,
+        "scanned": len(board),
+        "matches": matches[:8]
+    }
 
 
 # ==========================================

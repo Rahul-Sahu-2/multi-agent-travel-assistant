@@ -883,3 +883,39 @@ footer span {
         transform: rotate(360deg);
     }
 }
+
+/* ===== Chat / approval fixes ===== */
+
+.chat-messages { overflow-y: auto; }
+
+.message-bubble p { margin: 0 0 6px; }
+.message-bubble p:last-child { margin-bottom: 0; }
+
+.message.typing .message-bubble {
+    opacity: 0.75;
+    font-style: italic;
+}
+
+.message.typing .message-bubble::after {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: typingPulse 1s infinite ease-in-out;
+}
+
+@keyframes typingPulse {
+    0%, 100% { opacity: 0.2; transform: scale(0.8); }
+    50%      { opacity: 1;   transform: scale(1.2); }
+}
+
+.approval-actions button { cursor: pointer; }
+.approval-actions button:last-child { background: #64748b; }
+.approval-actions button:disabled,
+.primary-button:disabled,
+.chat-input-container button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.result-box { max-height: 70vh; overflow-y: auto; }
