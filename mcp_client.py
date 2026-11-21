@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 
 import certifi
@@ -53,9 +54,11 @@ client = MultiServerMCPClient(
 
         "aviationstack": {
             "transport": "stdio",
-            "command": "uvx",
+            # uvx is not installed in the Render image; run the installed package instead
+            "command": sys.executable,
             "args": [
-                "aviationstack-mcp"
+                "-m",
+                "aviationstack_mcp"
             ],
             "env": AVIATION_ENV
         }
