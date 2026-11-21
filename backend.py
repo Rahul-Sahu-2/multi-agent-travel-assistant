@@ -30,6 +30,7 @@ from mcp_client import (
     tavily_mcp_search,
     tavily_hotel_research,
     aviation_route_schedule,
+    aviation_departures_to,
     aviation_mcp_call,
     extract_destination,
 )
@@ -597,6 +598,10 @@ Rules:
   flight numbers, times or sources.
 - Flight numbers and times may come ONLY from Source A. Say they are from today's board
   and that the schedule on the travel date can differ.
+- Source A lists a DIRECT option and VIA-hub options. If there is no direct flight, present the
+  route as Origin -> Hub -> Destination with both legs and their flight numbers from Source A.
+  Never claim a direct flight exists when Source A says there is none.
+- A connection must be booked as one ticket; mention the hub city and the minimum connection time.
 - Fares may come ONLY from Source B. Name the site/URL for every fare. If there is no
   price, write "price not found in search results".
 - Do NOT claim to use Google Flights, Skyscanner or any tool that is not in the sources.
@@ -659,6 +664,84 @@ def _format_board(result: dict, dep: str, arr: str) -> str:
     return "\n".join(lines)
 
 
+# =========================
+# Route planner: direct flight, or connection via Indian hub (Delhi / Mumbai)
+# =========================
+HUB_AIRPORTS = ["DEL", "BOM"]  # main Indian international gateways
+
+US_CITY_AIRPORTS = {
+    "new york": ["JFK", "EWR", "LGA"],
+    "washington": ["IAD", "DCA", "BWI"],
+}
+
+try:
+    import airportsdata as _airportsdata
+    _AIRPORTS = _airportsdata.load("IATA")
+except Exception as _exc:  # pragma: no cover
+    print(f"airportsdata unavailable: {_exc}", flush=True)
+    _AIRPORTS = {}
+
+
+def _is_india_airport(code: str) -> bool:
+    return bool(code) and _AIRPORTS.get(code, {}).get("country") == "IN"
+
+
+def _airports_for_place(place: str) -> list:
+    text = (place or "").lower()
+    for key, codes in US_CITY_AIRPORTS.items():
+        if key in text:
+            return codes
+    code = _guess_iata(place)
+    return [code] if code else []
+
+
+def _board_lines(result: dict, dep: str, arr: str) -> str:
+    if not result.get("ok"):
+        return f"AviationStack data unavailable: {result.get('error', 'unknown error')}"
+
+    matches = result.get("matches", [])
+    if not matches:
+        return f"no {dep} -> {arr} flight on today's board ({result.get('scanned', 0)} departures checked)"
+
+    lines = []
+    for f in matches:
+        lines.append(
+            f"{f.get('airline')} {f.get('flight_number')}: {f.get('departure_airport_code', dep)} "
+            f"{f.get('departure_scheduled_time')} -> {f.get('arrival_airport_code')} "
+            f"{f.get('arrival_scheduled_time')}"
+        )
+    return f"{dep} -> {arr}: " + "; ".join(lines)
+
+
+def _plan_route_options(origin_label: str, dep: str, dest_codes: list) -> str:
+    """Direct options plus, for flights from India, connections via Delhi/Mumbai."""
+    if not dep or not dest_codes:
+        return "Airport codes could not be determined, so no live flight board was checked."
+
+    dest_text = "/".join(dest_codes)
+    lines = []
+
+    direct = asyncio.run(aviation_departures_to(dep, dest_codes))
+    lines.append(f"DIRECT option: {_board_lines(direct, dep, dest_text)}")
+
+    if _is_india_airport(dep):
+        for hub in HUB_AIRPORTS:
+            if hub == dep:
+                continue
+            leg1 = asyncio.run(aviation_departures_to(dep, [hub]))
+            leg2 = asyncio.run(aviation_departures_to(hub, dest_codes))
+            lines.append(f"VIA {hub} option:")
+            lines.append(f"  Leg 1 ({origin_label} to {hub}): {_board_lines(leg1, dep, hub)}")
+            lines.append(f"  Leg 2 ({hub} to {dest_text}): {_board_lines(leg2, hub, dest_text)}")
+
+    lines.append(
+        "Note: these lists come from today's departure boards only, so they show "
+        "which flights exist, not the flights on the travel date. A connection must be "
+        "booked as one ticket, with at least 3 hours between the two flights."
+    )
+    return "\n".join(lines)
+
+
 def flight_agent(state: TravelState):
     print("\nINSIDE FLIGHT AGENT\n")
     query = state["user_query"]
@@ -670,24 +753,30 @@ def flight_agent(state: TravelState):
     cities = _trip_cities(state)
     arrival_city = cities[0] if cities else destination
 
-    dep_iata = _guess_iata(constraints.get("origin", ""))
-    arr_iata = _guess_iata(arrival_city) or _guess_iata(constraints.get("destination", ""))
+    cities = _trip_cities(state)
+    arrival_city = cities[0] if cities else destination
+    dest_cities = cities or [destination]
 
-    # ---- Source A: AviationStack MCP (via mcp_client) ----
-    if dep_iata and arr_iata:
-        try:
-            board = asyncio.run(aviation_route_schedule(dep_iata, arr_iata))
-        except Exception as exc:
-            print(f"AVIATIONSTACK MCP ERROR: {type(exc).__name__}: {exc}", flush=True)
-            board = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        aviation_data = _format_board(board, dep_iata, arr_iata)
-    else:
-        aviation_data = "Airport codes could not be determined, so no live board was checked."
-    print("\nAVIATIONSTACK RESULT:", aviation_data[:500], flush=True)
+    dep_codes = _airports_for_place(constraints.get("origin", ""))
+    dep_iata = dep_codes[0] if dep_codes else None
+    dest_codes = []
+    for city in dest_cities:
+        dest_codes += _airports_for_place(city)
+    dest_codes = list(dict.fromkeys(dest_codes))
+    arr_iata = dest_codes[0] if dest_codes else None
+
+    # ---- Source A: AviationStack MCP route planner (direct + via Delhi/Mumbai) ----
+    try:
+        aviation_data = _plan_route_options(constraints.get("origin", ""), dep_iata, dest_codes)
+    except Exception as exc:
+        print(f"AVIATIONSTACK MCP ERROR: {type(exc).__name__}: {exc}", flush=True)
+        aviation_data = f"AviationStack data unavailable: {type(exc).__name__}: {exc}"
+    print("\nAVIATIONSTACK RESULT:", aviation_data[:600], flush=True)
 
     # ---- Source B: Tavily MCP (via mcp_client) ----
+    via = " via Delhi or Mumbai" if _is_india_airport(dep_iata or "") else ""
     search_query = (
-        f"flights from {origin} to {arrival_city} airlines non-stop flight duration "
+        f"flights from {origin} to {arrival_city}{via} airlines flight duration "
         f"round trip ticket price {constraints.get('duration', '')}"
     )
     try:
