@@ -1,128 +1,387 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
-
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>Travel Agent</title>
+    <title>Travel Agent | AI Travel Planner</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap"
+          rel="stylesheet">
 
     <link rel="stylesheet" href="/static/style.css">
 </head>
 
 <body>
 
-    <div class="page-bg">
-        <div class="gradient-circle circle-1"></div>
-        <div class="gradient-circle circle-2"></div>
-        <div class="gradient-circle circle-3"></div>
-    </div>
+    <!-- NAVBAR -->
 
-    <main class="app-container">
+    <header class="navbar">
 
-        <section class="hero-section">
-            <div class="badge">
-                ✈️ Travel Agent — A Multi-Agent Travel Planner
+        <a href="/" class="brand">
+            <span class="brand-icon">✈</span>
+            <span>Travel<span class="brand-highlight">Agent</span></span>
+        </a>
+
+        <nav>
+            <a href="/" class="active">Home</a>
+            <a href="#planner">Plan Trip</a>
+            <a href="#assistant">AI Assistant</a>
+        </nav>
+
+        <div class="online-status">
+            <span class="status-dot"></span>
+            AI Travel Assistant
+        </div>
+
+    </header>
+
+
+    <main class="container">
+
+        <!-- HERO SECTION -->
+
+        <section class="hero">
+
+            <div class="hero-content">
+
+                <span class="hero-label">YOUR PERSONAL AI TRAVEL PLANNER</span>
+
+                <h1>
+                    Plan Your Perfect Trip<br>
+                    <span>with AI</span>
+                </h1>
+
+                <p>
+                    Get personalized travel plans, discover destinations,
+                    find hotels and explore amazing places around the world.
+                </p>
+
+                <a href="#planner" class="hero-button">
+                    Start Planning →
+                </a>
+
             </div>
 
-            <h1>
-                Plan Your Perfect Trip with AI
-            </h1>
+            <div class="hero-image">
+                <div class="hero-image-overlay"></div>
+                <div class="hero-image-text">
+                    <span>EXPLORE THE WORLD</span>
+                    <h2>Your next adventure starts here.</h2>
+                </div>
+            </div>
 
-            <p>
-                Search flights, discover hotels, and generate a complete travel itinerary using a multi-agent system.
-            </p>
         </section>
 
-        <section class="planner-card">
 
-            <div class="card-header">
+        <!-- TRIP PLANNER -->
+
+        <section class="planner-card" id="planner">
+
+            <div class="section-title">
+
+                <div class="step-number">01</div>
+
                 <div>
-                    <h2>Where do you want to go?</h2>
-                    <p>
-                        Example: Plan a complete 7 days Japan trip from Bangladesh under 2 lakhs.
-                    </p>
+                    <h2>Plan Your Journey</h2>
+                    <p>Enter your basic travel details to get started.</p>
                 </div>
 
-                <div class="status-pill">
-                    <span class="status-dot"></span>
-                    Online
-                </div>
             </div>
 
-            <div class="input-area">
-                <textarea
-                    id="userInput"
-                    placeholder="Plan a complete 7 days Japan trip including flights, hotels and sightseeing under 2 lakhs..."
-                ></textarea>
 
-                <button id="sendBtn" onclick="sendMessage()">
-                    <span id="btnText">Generate Plan</span>
+            <form id="tripForm">
+
+                <div class="form-grid">
+
+                    <div class="form-group">
+                        <label for="fromCity">From</label>
+
+                        <div class="input-wrapper">
+                            <span>⌖</span>
+                            <input
+                                type="text"
+                                id="fromCity"
+                                placeholder="e.g. Bhopal, India"
+                                required
+                            >
+                        </div>
+                    </div>
+
+
+                    <div class="form-group">
+                        <label for="destination">Destination</label>
+
+                        <div class="input-wrapper">
+                            <span>⌖</span>
+                            <input
+                                type="text"
+                                id="destination"
+                                placeholder="e.g. Dubai, UAE"
+                                required
+                            >
+                        </div>
+                    </div>
+
+
+                    <div class="form-group">
+                        <label for="travelMonth">Travel Month / Date</label>
+
+                        <div class="input-wrapper">
+                            <span>▦</span>
+                            <input
+                                type="text"
+                                id="travelMonth"
+                                placeholder="e.g. December 2026"
+                                required
+                            >
+                        </div>
+                    </div>
+
+
+                    <div class="form-group">
+                        <label for="duration">Trip Duration</label>
+
+                        <div class="input-wrapper">
+                            <span>◷</span>
+
+                            <select id="duration">
+                                <option value="5 days">5 Days</option>
+                                <option value="10 days">10 Days</option>
+                            </select>
+                        </div>
+                    </div>
+
+
+                    <div class="form-group">
+                        <label for="travellers">Travellers</label>
+
+                        <div class="input-wrapper">
+                            <span>♙</span>
+
+                            <select id="travellers">
+                                <option value="1 traveller">1 Traveller</option>
+                                <option value="2 travellers" selected>2 Travellers</option>
+                                <option value="3 travellers">3 Travellers</option>
+                                <option value="4 travellers">4 Travellers</option>
+                                <option value="5 or more travellers">5+ Travellers</option>
+                            </select>
+                        </div>
+                    </div>
+
+
+                    <div class="form-group">
+                        <label for="budget">Budget (Optional)</label>
+
+                        <div class="input-wrapper">
+                            <span>₹</span>
+
+                            <input
+                                type="text"
+                                id="budget"
+                                placeholder="e.g. 1,00,000"
+                            >
+                        </div>
+                    </div>
+
+                </div>
+
+
+                <button type="submit" id="sendBtn" class="primary-button">
+
+                    <span id="btnText">✦ Create My Travel Plan</span>
+
                     <span id="btnLoader" class="loader hidden"></span>
+
+                    <span>→</span>
+
                 </button>
+
+                <p class="form-note">
+                    Your AI assistant may ask additional questions to personalize your trip.
+                </p>
+
+            </form>
+
+        </section>
+
+
+        <!-- CHAT AND TRAVEL PLAN -->
+
+        <section class="workspace">
+
+            <!-- AI CHAT -->
+
+            <div class="chat-card" id="assistant">
+
+                <div class="card-header">
+
+                    <div class="assistant-info">
+
+                        <div class="assistant-avatar">✈</div>
+
+                        <div>
+                            <h2>Your Travel Assistant</h2>
+
+                            <p>
+                                <span class="status-dot"></span>
+                                Ready to help
+                            </p>
+                        </div>
+
+                    </div>
+
+                    <button id="newTripBtn" class="new-trip-btn">
+                        ↻ New Trip
+                    </button>
+
+                </div>
+
+
+                <div class="chat-messages" id="conversationMessages">
+
+                    <div class="message assistant-message">
+
+                        <div class="message-avatar">✈</div>
+
+                        <div class="message-body">
+
+                            <div class="message-name">Travel Agent</div>
+
+                            <div class="message-bubble">
+                                Hello! I'm your AI travel assistant.
+
+                                <br><br>
+
+                                Enter your trip details above and I'll help
+                                you create your personalized travel plan.
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <div class="chat-input-container">
+
+                    <textarea
+                        id="userInput"
+                        rows="2"
+                        placeholder="Ask anything about your trip..."
+                    ></textarea>
+
+                    <button id="chatSendBtn" onclick="sendMessage()">
+                        ➤
+                    </button>
+
+                </div>
+
+                <p class="chat-hint">
+                    Press Ctrl + Enter to send
+                </p>
+
             </div>
 
-            <div class="quick-prompts">
-                <button onclick="setPrompt('Plan a complete 7 days Japan trip from Bangladesh including flights, hotels and sightseeing under 2 lakhs.')">
-                    Japan Trip
-                </button>
 
-                <button onclick="setPrompt('Plan a 5 days Dubai trip from Dhaka with flights, hotels and sightseeing.')">
-                    Dubai Trip
-                </button>
+            <!-- TRAVEL PLAN -->
 
-                <button onclick="setPrompt('Plan a 7 days Thailand trip from Bangladesh with budget hotels and sightseeing.')">
-                    Thailand Trip
-                </button>
+            <div class="result-card">
 
-                <button onclick="setPrompt('Give me all country flight info.')">
-                    Global Flights
-                </button>
+                <div class="result-card-header">
+
+                    <div>
+                        <h2>✦ Your Travel Plan</h2>
+                        <p id="threadInfo">Your generated plan will appear here.</p>
+                    </div>
+
+                    <div class="result-actions">
+
+                        <button class="copy-btn" onclick="copyResult()">
+                            Copy
+                        </button>
+
+                        <button class="download-btn" onclick="downloadPDF()">
+                            ↓ PDF
+                        </button>
+
+                    </div>
+
+                </div>
+
+
+                <div id="pdfContent" class="pdf-content">
+
+                    <div class="pdf-heading">
+                        <h1>Travel Agent</h1>
+                        <p>Your personalized travel plan</p>
+                    </div>
+
+                    <div id="resultBox" class="result-box">
+
+                        <div class="empty-result">
+
+                            <div class="empty-icon">✈</div>
+
+                            <h3>Your adventure starts here</h3>
+
+                            <p>
+                                Fill in your trip details and generate your
+                                personalized travel plan.
+                            </p>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <!-- APPROVAL ACTIONS -->
+
+                <div id="approvalActions" class="approval-actions hidden">
+
+                    <p>Would you like to approve this travel plan?</p>
+
+                    <button onclick="submitApproval(true)">
+                        Approve Plan
+                    </button>
+
+                    <button onclick="submitApproval(false)">
+                        Request Changes
+                    </button>
+
+                </div>
+
             </div>
 
         </section>
 
-        <section id="resultSection" class="result-section hidden">
 
-            <div class="result-header">
-                <div>
-                    <h2>Your AI Travel Plan</h2>
-                    <p id="threadInfo">Thread ID: -</p>
-                </div>
+        <!-- ERROR MESSAGE -->
 
-                <div class="result-actions">
-                    <button class="copy-btn" onclick="copyResult()">
-                        Copy
-                    </button>
-
-                    <button class="download-btn" onclick="downloadPDF()">
-                        Download PDF
-                    </button>
-                </div>
-            </div>
-
-            <div id="pdfContent" class="pdf-content">
-                <h1 class="pdf-title">AI Travel Plan</h1>
-                <div id="resultBox" class="result-box"></div>
-            </div>
-
-        </section>
-
-        <section id="errorBox" class="error-box hidden"></section>
+        <div id="errorBox" class="error-box hidden"></div>
 
     </main>
 
+
     <footer>
-        Built with FastAPI, LangGraph, Groq, PostgreSQL, Tavily and AviationStack
+        <strong>TravelAgent</strong>
+        <span>Plan less. Explore more.</span>
     </footer>
 
-    <!-- Markdown Renderer -->
+
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
-    <!-- PDF Download Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.6/purify.min.js"></script>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 
-    <!-- Your Custom JS -->
     <script src="/static/script.js"></script>
 
 </body>
