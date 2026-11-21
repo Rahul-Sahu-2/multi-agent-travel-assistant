@@ -340,6 +340,42 @@ async def aviation_route_schedule(
     }
 
 
+async def aviation_departures_to(dep_iata: str, arr_codes, limit: int = 100):
+    """
+    Today's departures from dep_iata that land at ANY airport in arr_codes.
+    Used for direct checks and for connection legs (e.g. BHO -> DEL, DEL -> JFK).
+    Returns {"ok": True, "scanned": N, "matches": [...]} or {"ok": False, "error": "..."}.
+    """
+    wanted = {str(c).upper() for c in arr_codes if c}
+
+    raw = await aviation_mcp_call(
+        "flight_arrival_departure_schedule",
+        {
+            "airport_iata_code": dep_iata,
+            "schedule_type": "departure",
+            "number_of_flights": limit
+        }
+    )
+
+    text = mcp_result_text(raw)
+
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {"ok": False, "error": text[:300]}
+
+    if not data.get("ok"):
+        return {"ok": False, "error": str(data.get("error", "unknown error"))[:300]}
+
+    board = data.get("data", []) or []
+    matches = [
+        flight for flight in board
+        if str(flight.get("arrival_airport_code", "")).upper() in wanted
+    ]
+
+    return {"ok": True, "scanned": len(board), "matches": matches[:8]}
+
+
 # ==========================================
 # Destination extractor
 # ==========================================
